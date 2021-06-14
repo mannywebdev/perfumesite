@@ -1,0 +1,61 @@
+saveCityPopularMarkets: async (req, res) => {
+    const t = await sequelize.transaction();
+    try {
+      const fileNames = await readLocationDir("locations")
+      for (let fileName of fileNames) {
+        if (path.extname(fileName) == ".json") {
+          let jsonData = await readLocationFile("locations/" + fileName)
+          // console.log(`jsonData`, jsonData)
+          let latLon = jsonData[0].latlon.split(",");
+          let latitude = jsonData[0].latlon.split(",")[0];
+          let longitude = jsonData[0].latlon.split(",")[1];
+          // console.log(`existingcity`,jsonData[0].city)
+          const existingcity = await Models.StoreCity.findOne({
+            // logging: console.log,
+            where: {
+              city_name: jsonData[0].city
+            }
+          });
+          // console.log(`existing`, existingcity)
+          if (_.isNull(existingcity)) {
+            let cityData = await Models.StoreCity.create({
+              state: jsonData[0].state,
+              city_name: jsonData[0].city,
+              latitude: latitude,
+              longitude: longitude,
+            }, {
+              transaction: t
+            });
+            var cityPopularMarkets = [];
+            for (var i = 0; i < jsonData.length; i++) {
+              var cityMarketObj = {
+                city_id: cityData.id,
+                market_name: jsonData[i].localityName,
+                latitude: jsonData[i].latlon.split(",")[0],
+                longitude: jsonData[i].latlon.split(",")[1],
+              };
+              cityPopularMarkets.push(cityMarketObj);
+            }
+            await Models.PopularMarkets.bulkCreate(
+              cityPopularMarkets, {
+                transaction: t
+              }, {
+                returning: true,
+              }
+            );
+          }
+        }
+      }
+      await t.commit()
+      return Helper.dieJsonSuccess(res, "City data saved successfully");
+    } catch (error) {
+      console.log("error:", error);
+      await t.rollback();
+      return Helper.dieJsonError(
+        res, {},
+        error.message ? error.message : error ? error : "something went wrong",
+        500
+      );
+    }
+
+  },
