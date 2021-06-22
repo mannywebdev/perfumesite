@@ -1,61 +1,321 @@
-saveCityPopularMarkets: async (req, res) => {
-    const t = await sequelize.transaction();
-    try {
-      const fileNames = await readLocationDir("locations")
-      for (let fileName of fileNames) {
-        if (path.extname(fileName) == ".json") {
-          let jsonData = await readLocationFile("locations/" + fileName)
-          // console.log(`jsonData`, jsonData)
-          let latLon = jsonData[0].latlon.split(",");
-          let latitude = jsonData[0].latlon.split(",")[0];
-          let longitude = jsonData[0].latlon.split(",")[1];
-          // console.log(`existingcity`,jsonData[0].city)
-          const existingcity = await Models.StoreCity.findOne({
-            // logging: console.log,
-            where: {
-              city_name: jsonData[0].city
-            }
-          });
-          // console.log(`existing`, existingcity)
-          if (_.isNull(existingcity)) {
-            let cityData = await Models.StoreCity.create({
-              state: jsonData[0].state,
-              city_name: jsonData[0].city,
-              latitude: latitude,
-              longitude: longitude,
-            }, {
-              transaction: t
-            });
-            var cityPopularMarkets = [];
-            for (var i = 0; i < jsonData.length; i++) {
-              var cityMarketObj = {
-                city_id: cityData.id,
-                market_name: jsonData[i].localityName,
-                latitude: jsonData[i].latlon.split(",")[0],
-                longitude: jsonData[i].latlon.split(",")[1],
-              };
-              cityPopularMarkets.push(cityMarketObj);
-            }
-            await Models.PopularMarkets.bulkCreate(
-              cityPopularMarkets, {
-                transaction: t
-              }, {
-                returning: true,
-              }
-            );
-          }
-        }
-      }
-      await t.commit()
-      return Helper.dieJsonSuccess(res, "City data saved successfully");
-    } catch (error) {
-      console.log("error:", error);
-      await t.rollback();
-      return Helper.dieJsonError(
-        res, {},
-        error.message ? error.message : error ? error : "something went wrong",
-        500
-      );
-    }
+getAllStores: async (req, res) => {
+    try {
+      let schema = Joi.object({
+        locality_latitude: Joi.optional().allow(""),
+        locality_longitude: Joi.optional().allow(""),
+        bussiness_name: Joi.optional().allow(""),
+      });
 
-  },
+      let validationError = schema.validate(req.body);
+      if (validationError.error && validationError.error !== null) {
+        return Helper.validationErrorFunction(validationError, res);
+      }
+
+      let locality_latitude = req.body.locality_latitude
+      let locality_longitude = req.body.locality_longitude
+      let bussiness_name = req.body.bussiness_name
+
+
+      // const stores = await Models.UserStore.findAll({});
+      let stores = await Models.UserStore.findAll({
+        include: [{
+            model: Models.UserContacts,
+            required: false,
+            attributes: ["username", "verified", "avatar"],
+          },
+          {
+            model: Models.UserStoreSubcategories,
+            required: false,
+            include: [{
+              model: Models.Category,
+              required: false,
+              attributes: ["CategoryId", "CategoryName", "CategoryImage"],
+              where: {
+                isDeleted: CONSTANTS.COMMON_CONSTANTS.ENTITY_NO,
+              },
+            }, ],
+          },
+          {
+            model: Models.Category,
+            required: false,
+            attributes: ["CategoryId", "CategoryName", "CategoryImage"],
+            where: {
+              isDeleted: CONSTANTS.COMMON_CONSTANTS.ENTITY_NO,
+            },
+          },
+
+          {
+            model: Models.UserStoreCategories,
+            required: false,
+            include: [{
+                model: Models.Category,
+                required: false,
+                attributes: ["CategoryId", "CategoryName", "CategoryImage"],
+                where: {
+                  isDeleted: CONSTANTS.COMMON_CONSTANTS.ENTITY_NO,
+                },
+              },
+
+            ],
+          },
+          {
+            model: Models.StoreCity,
+            required: false,
+          },
+          {
+            model: Models.PopularMarkets,
+            required: false,
+          },
+
+          {
+            model: Models.StoreGreetingMessage,
+            required: false,
+          },
+        ],
+      });
+
+      if (_.isNull(stores)) {
+        stores = [];
+        return Helper.dieJsonSuccess(res, "No Store Found");
+      } else {
+        for (let [i, storeData] of stores.entries()) {
+          //let storeData of stores) {
+
+          storeData = storeData.toJSON();
+          // storeData["UserStoreCategories"][0] = storeData.Category;
+          if (storeData.Category !== null) {
+            if (_.isEmpty(storeData.UserStoreCategories)) {
+              storeData.UserStoreCategories = [{
+                id: storeData.Category.CategoryId,
+                user_store_id: storeData.id,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                category_id: storeData.category_id,
+                Categories: [storeData.Category],
+              }, ];
+            }
+            stores[i] = storeData;
+          }
+        }
+        if (_.isEmpty(locality_latitude) && _.isEmpty(locality_longitude) && _.isEmpty(bussiness_name)) {
+          return Helper.dieJsonSuccess(res, stores, "stores");
+        } else if (!_.isEmpty(locality_latitude) && !_.isEmpty(locality_longitude) && _.isEmpty(bussiness_name)) {
+          var nearbystores = []
+          for (const store of stores) {
+            const lat = store.PopularMarket.latitude
+            const lon = store.PopularMarket.longitude
+
+
+            const distance = getDistanceFromLatLonInKm(locality_latitude, locality_longitude, lat, lon)
+            const roundoffdistance = Math.floor(distance)
+
+            function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
+              var R = 6371; // Radius of the earth in km
+              var dLat = deg2rad(lat2 - lat1); // deg2rad below
+              var dLon = deg2rad(lon2 - lon1);
+              var a =
+                Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+              var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+              var d = R * c; // Distance in km
+              return d;
+            }
+
+            function deg2rad(deg) {
+              return deg * (Math.PI / 180)
+            }
+
+            if (roundoffdistance < 20) {
+              nearbystores.push(store)
+            }
+          }
+          if (nearbystores.length === 0) {
+            return Helper.dieJsonSuccess(res, [], "");
+          } else {
+            return Helper.dieJsonSuccess(res, nearbystores, "nearbystores");
+          }
+        } else if (!_.isEmpty(locality_latitude) && !_.isEmpty(locality_longitude) && !_.isEmpty(bussiness_name)) {
+          var nearbystores = []
+          for (const store of stores) {
+            const lat = store.PopularMarket.latitude
+            const lon = store.PopularMarket.longitude
+
+
+            const distance = getDistanceFromLatLonInKm(locality_latitude, locality_longitude, lat, lon)
+            const roundoffdistance = Math.floor(distance)
+
+            function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
+              var R = 6371; // Radius of the earth in km
+              var dLat = deg2rad(lat2 - lat1); // deg2rad below
+              var dLon = deg2rad(lon2 - lon1);
+              var a =
+                Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+              var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+              var d = R * c; // Distance in km
+              return d;
+            }
+
+            function deg2rad(deg) {
+              return deg * (Math.PI / 180)
+            }
+
+            if (roundoffdistance < 20) {
+              nearbystores.push(store)
+            }
+          }
+          if (nearbystores.length === 0) {
+            return Helper.dieJsonSuccess(res, [], "");
+          } else {
+            let filteredStores = []
+            for (let nearbystore of nearbystores) {
+              if (nearbystore.bussiness_name.toLowerCase().includes(bussiness_name.toLowerCase())) { //on the bsis of business_name
+                filteredStores.push(nearbystore)
+              }
+            }
+            if (filteredStores.length === 0) {
+              for (let nearbystore of nearbystores) {
+                nearbystore.UserStoreCategories.forEach((item) => {
+                  item.Categories.map((subitem) => {
+                    if (subitem.CategoryName.toLowerCase().includes(bussiness_name.toLowerCase())) { //on the basis of categories
+                      filteredStores.push(nearbystore)
+                    }
+                  })
+                })
+              }
+              if (filteredStores.length === 0) {
+                // return Helper.dieJsonSuccess(res, [], "");
+                try {
+                  console.log(`bussiness_name`, bussiness_name)
+                  const products = await Models.Products.findAll({
+                    where: {
+                      item_name: bussiness_name
+                    },
+                  });
+                  console.log(`products`, products)
+                  if (products.length > 0) {
+                    var userstores = []
+                    for (product of products) {
+                      await Models.UserStore.findOne({
+                        where: {
+                          username: product.username
+                        },
+                        include: [{
+                            model: Models.UserContacts,
+                            required: false,
+                            attributes: ["username", "verified", "avatar"],
+                          },
+                          {
+                            model: Models.UserStoreSubcategories,
+                            required: false,
+                            include: [{
+                              model: Models.Category,
+                              required: false,
+                              attributes: ["CategoryId", "CategoryName", "CategoryImage"],
+                              where: {
+                                isDeleted: CONSTANTS.COMMON_CONSTANTS.ENTITY_NO,
+                              },
+                            }, ],
+                          },
+                          {
+                            model: Models.Category,
+                            required: false,
+                            attributes: ["CategoryId", "CategoryName", "CategoryImage"],
+                            where: {
+                              isDeleted: CONSTANTS.COMMON_CONSTANTS.ENTITY_NO,
+                            },
+                          },
+
+                          {
+                            model: Models.UserStoreCategories,
+                            required: false,
+                            include: [{
+                                model: Models.Category,
+                                required: false,
+                                attributes: ["CategoryId", "CategoryName", "CategoryImage"],
+                                where: {
+                                  isDeleted: CONSTANTS.COMMON_CONSTANTS.ENTITY_NO,
+                                },
+                              },
+
+                            ],
+                          },
+                          {
+                            model: Models.StoreCity,
+                            required: false,
+                          },
+                          {
+                            model: Models.PopularMarkets,
+                            required: false,
+                          },
+
+                          {
+                            model: Models.StoreGreetingMessage,
+                            required: false,
+                          },
+                        ],
+                      }).then((res) => {
+                        userstores.push(res)
+                      })
+                    }
+                    var nearby = []
+                    for (const store of userstores) {
+                      const lat = store.PopularMarket.latitude
+                      const lon = store.PopularMarket.longitude
+
+
+                      const distance = getDistanceFromLatLonInKm(locality_latitude, locality_longitude, lat, lon)
+                      const roundoffdistance = Math.floor(distance)
+
+                      function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
+                        var R = 6371; // Radius of the earth in km
+                        var dLat = deg2rad(lat2 - lat1); // deg2rad below
+                        var dLon = deg2rad(lon2 - lon1);
+                        var a =
+                          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                          Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+                          Math.sin(dLon / 2) * Math.sin(dLon / 2);
+                        var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+                        var d = R * c; // Distance in km
+                        return d;
+                      }
+
+                      function deg2rad(deg) {
+                        return deg * (Math.PI / 180)
+                      }
+
+                      if (roundoffdistance < 20) {
+                        nearby.push(store)
+                      }
+                    }
+                    if (nearby.length === 0) {
+                      return Helper.dieJsonSuccess(res, [], "");
+                    } else {
+                      return Helper.dieJsonSuccess(res, userstores, "Filtered store according to product name.");
+                    }
+
+                  } else {
+                    return Helper.dieJsonSuccess(res, [], "");
+                  }
+                } catch (e) {
+                  console.log("Not Results Found:", e);
+                  return Helper.dieJsonErrorDefault(res);
+                }
+
+              } else {
+                return Helper.dieJsonSuccess(res, filteredStores, "Filtered store according to category name.");
+              }
+
+            } else {
+              return Helper.dieJsonSuccess(res, filteredStores, "Filtered store according store name.");
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.log("api getStores error:", e);
+      return Helper.dieJsonErrorDefault(res);
+    }
+  },
